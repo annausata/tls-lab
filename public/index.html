@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <title>TLS Lab</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 60px auto; }
+    button { padding: 10px 24px; margin: 8px; font-size: 16px; cursor: pointer; }
+    pre { background: #f4f4f4; padding: 16px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>TLS Lab — OIDC</h1>
+  <button onclick="location.href='/login'">Login через Casdoor</button>
+  <button onclick="getUserInfo()">Get User Info</button>
+  <pre id="result">Натисни кнопку...</pre>
+
+  <script>
+    async function getUserInfo() {
+      const res = await fetch('/user-info');
+      const data = await res.json();
+      document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+    }
+  </script>
+</body>
+</html>

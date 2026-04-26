@@ -1,5 +1,11 @@
 {
   "name": "tls-lab",
   "version": "1.0.0",
-  "main": "server.js"
+  "main": "server.js",
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "node-fetch": "^3.3.2"
+  }
 }
