@@ -2,24 +2,109 @@
 <html lang="uk">
 <head>
   <meta charset="UTF-8">
-  <title>TLS Lab</title>
+  <title>TLS Lab — WebSocket</title>
+  <script src="https://cdn.jsdelivr.net/npm/protobufjs@7/dist/protobuf.min.js"></script>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 600px; margin: 60px auto; }
-    button { padding: 10px 24px; margin: 8px; font-size: 16px; cursor: pointer; }
-    pre { background: #f4f4f4; padding: 16px; border-radius: 6px; }
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; background: #f9f9f9; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 18px; margin-top: 30px; }
+    button { padding: 10px 24px; font-size: 15px; cursor: pointer; background: #222; color: white; border: none; border-radius: 4px; }
+    button:hover { background: #444; }
+    .price-row { padding: 10px 14px; margin: 6px 0; background: white; border-radius: 6px; font-size: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+    .price-row span { color: #888; font-size: 13px; margin-left: 8px; }
+    #status { margin: 10px 0; font-size: 14px; color: #555; }
+    pre { background: #f0f0f0; padding: 12px; border-radius: 6px; font-size: 13px; }
+    hr { margin: 24px 0; border: none; border-top: 1px solid #ddd; }
   </style>
 </head>
 <body>
-  <h1>TLS Lab — OIDC</h1>
+  <h1>TLS Lab — OIDC + WebSocket</h1>
+
   <button onclick="location.href='/login'">Login через Casdoor</button>
-  <button onclick="getUserInfo()">Get User Info</button>
-  <pre id="result">Натисни кнопку...</pre>
+  <button onclick="getUserInfo()" style="margin-left:8px; background:#555;">Get User Info</button>
+  <pre id="user-result">Натисни кнопку...</pre>
+
+  <hr>
+  <h2>Cryptocurrency Updates</h2>
+  <button onclick="toggleSubscribe()" id="sub-btn">Subscribe to Updates</button>
+  <p id="status">Не підключено</p>
+  <div id="prices"></div>
 
   <script>
+    let ws = null;
+    let PriceUpdate = null;
+    let subscribed = false;
+
+    protobuf.load('/price.proto').then(root => {
+      PriceUpdate = root.lookupType('PriceUpdate');
+    });
+
     async function getUserInfo() {
       const res = await fetch('/user-info');
       const data = await res.json();
-      document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+      document.getElementById('user-result').textContent = JSON.stringify(data, null, 2);
+    }
+
+    function getCookie(name) {
+      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+      return match ? match[2] : null;
+    }
+
+    function toggleSubscribe() {
+      if (subscribed) {
+        if (ws) ws.close();
+        return;
+      }
+
+      const token = getCookie('token_js');
+      if (!token) {
+        alert('Спочатку увійди через Casdoor');
+        return;
+      }
+
+      ws = new WebSocket(`wss://localhost:3000/ws?token=${token}`);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'subscribe', coins: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'] }));
+        document.getElementById('status').textContent = '✅ Підключено — отримуємо оновлення...';
+        document.getElementById('sub-btn').textContent = 'Unsubscribe';
+        subscribed = true;
+      };
+
+      ws.onmessage = (event) => {
+  if (event.data instanceof ArrayBuffer) {
+    try {
+      const msg = PriceUpdate.decode(new Uint8Array(event.data));
+      updatePrice(msg.symbol, msg.price, msg.time);
+    } catch (e) {
+      console.log('Помилка декодування:', e);
+    }
+  } else {
+    console.log('Текстове повідомлення:', event.data);
+  }
+};
+
+      ws.onclose = (e) => {
+        document.getElementById('status').textContent = e.code === 4001
+          ? '❌ Помилка: не авторизовано'
+          : '⚪ Відключено';
+        document.getElementById('sub-btn').textContent = 'Subscribe to Updates';
+        subscribed = false;
+      };
+    }
+
+    function updatePrice(symbol, price, time) {
+      const id = 'price-' + symbol;
+      let el = document.getElementById(id);
+      if (!el) {
+        el = document.createElement('div');
+        el.id = id;
+        el.className = 'price-row';
+        document.getElementById('prices').appendChild(el);
+      }
+      const t = new Date(Number(time)).toLocaleTimeString();
+      el.innerHTML = `<b>${symbol}:</b> $${parseFloat(price).toFixed(2)} <span>(${t})</span>`;
     }
   </script>
 </body>

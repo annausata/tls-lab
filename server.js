@@ -3,6 +3,9 @@ const fs = require('fs');
 const express = require('express');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const jwt = require('jsonwebtoken');
+const { WebSocketServer, WebSocket } = require('ws');
+const protobuf = require('protobufjs');
 
 const app = express();
 
@@ -10,51 +13,6 @@ const CLIENT_ID = 'b71f623f1c7efa723c3f';
 const CLIENT_SECRET = '135836cd9abf3a7bc2b4cc1170821f20b9457557';
 const CASDOOR_URL = 'http://localhost:8000';
 const REDIRECT_URI = 'https://localhost:3000/callback';
-
-app.use(cookieParser());
-app.use(session({ secret: 'tls-lab-secret', resave: false, saveUninitialized: false }));
-app.use(express.static('public'));
-
-app.get('/hello', (req, res) => {
-  res.type('text/plain').send('Hello from Anna Usata kp_32');
-});
-
-app.get('/login', (req, res) => {
-  const url = `${CASDOOR_URL}/login/oauth/authorize` +
-    `?client_id=${CLIENT_ID}` +
-    `&response_type=code` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&scope=openid profile email` +
-    `&state=random_state`;
-  res.redirect(url);
-});
-
-app.get('/callback', async (req, res) => {
-  const { code } = req.query;
-  if (!code) return res.status(400).send('No code');
-
-  const params = new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: CLIENT_ID,
-    client_secret: CLIENT_SECRET,
-    code,
-    redirect_uri: REDIRECT_URI,
-  });
-
-  const tokenRes = await fetch(`${CASDOOR_URL}/api/login/oauth/access_token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
-  });
-
-  const tokenData = await tokenRes.json();
-  const token = tokenData.access_token;
-
-  res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'Strict' });
-  res.redirect('/');
-});
-
-const jwt = require('jsonwebtoken');
 
 const CASDOOR_PUBLIC_KEY = `-----BEGIN CERTIFICATE-----
 MIIE3TCCAsWgAwIBAgIDAeJAMA0GCSqGSIb3DQEBCwUAMCgxDjAMBgNVBAoTBWFk
@@ -86,14 +44,53 @@ jrUZ6F2xxY64itn/KAtFrrg9D2PNSCbgA8RYczkL3eD5Iq2A1ZTMxZQ1QEvHdyqA
 DSg==
 -----END CERTIFICATE-----`;
 
+const COINS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt', 'dogeusdt'];
+
+app.use(cookieParser());
+app.use(session({ secret: 'tls-lab-secret', resave: false, saveUninitialized: false }));
+app.use(express.static('public'));
+
+app.get('/hello', (req, res) => {
+  res.type('text/plain').send('Hello from Anna Usata kp_32');
+});
+
+app.get('/login', (req, res) => {
+  const url = `${CASDOOR_URL}/login/oauth/authorize` +
+    `?client_id=${CLIENT_ID}` +
+    `&response_type=code` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&scope=openid profile email` +
+    `&state=random_state`;
+  res.redirect(url);
+});
+
+app.get('/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.status(400).send('No code');
+  const params = new URLSearchParams({
+    grant_type: 'authorization_code',
+    client_id: CLIENT_ID,
+    client_secret: CLIENT_SECRET,
+    code,
+    redirect_uri: REDIRECT_URI,
+  });
+  const tokenRes = await fetch(`${CASDOOR_URL}/api/login/oauth/access_token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const tokenData = await tokenRes.json();
+  const token = tokenData.access_token;
+  res.cookie('token', token, { httpOnly: true, secure: true, sameSite: 'Strict' });
+res.cookie('token_js', token, { httpOnly: false, secure: true, sameSite: 'Strict' });
+  res.redirect('/');
+});
+
 app.get('/user-info', (req, res) => {
   const token = req.cookies.token;
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
-
   try {
-    const decoded = jwt.verify(token, CASDOOR_PUBLIC_KEY, {
-      algorithms: ['RS256'],
-    });
+    const decoded = jwt.verify(token, CASDOOR_PUBLIC_KEY, { algorithms: ['RS256'] });
     res.json({
       sub: decoded.sub,
       iss: decoded.iss,
@@ -117,6 +114,74 @@ const options = {
   ciphers: 'AES128-SHA256:AES256-SHA256:AES128-SHA:AES256-SHA'
 };
 
-https.createServer(options, app).listen(3000, () => {
+const server = https.createServer(options, app);
+
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+let PriceUpdate;
+protobuf.load('price.proto').then(root => {
+  PriceUpdate = root.lookupType('PriceUpdate');
+});
+
+const sessions = new Map();
+
+const binanceWs = new WebSocket(
+  `wss://stream.binance.com:9443/stream?streams=${COINS.map(c => `${c}@ticker`).join('/')}`
+);
+
+binanceWs.on('message', (data) => {
+  if (!PriceUpdate) return;
+  const parsed = JSON.parse(data);
+  const ticker = parsed.data;
+  if (!ticker) return;
+
+  const symbol = ticker.s;
+  const price = ticker.c;
+  const time = Date.now();
+
+  const msg = PriceUpdate.create({ symbol, price, time });
+  const encoded = PriceUpdate.encode(msg).finish();
+
+  for (const [ws, info] of sessions.entries()) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (info.coins.includes(symbol.toLowerCase())) {
+      ws.send(encoded);
+    }
+  }
+});
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, 'https://localhost:3000');
+  const token = url.searchParams.get('token');
+
+  if (!token) {
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+
+  try {
+    jwt.verify(token, CASDOOR_PUBLIC_KEY, { algorithms: ['RS256'] });
+  } catch {
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+
+  sessions.set(ws, { coins: [] });
+  ws.send(JSON.stringify({ type: 'connected', message: 'Вкажи монети для підписки' }));
+
+  ws.on('message', (msg) => {
+    try {
+      const data = JSON.parse(msg);
+      if (data.type === 'subscribe' && Array.isArray(data.coins)) {
+        sessions.get(ws).coins = data.coins.map(c => c.toLowerCase());
+        ws.send(JSON.stringify({ type: 'subscribed', coins: data.coins }));
+      }
+    } catch {}
+  });
+
+  ws.on('close', () => sessions.delete(ws));
+});
+
+server.listen(3000, () => {
   console.log('Server running at https://localhost:3000');
 });
